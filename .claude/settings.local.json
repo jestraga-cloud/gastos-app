@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm run dev:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nMigrar almacenamiento a Supabase con gastos compartidos\n\n- Agregar autenticación con email/password\n- Reemplazar localStorage por Supabase\n- Agregar sincronización en tiempo real\n- Mostrar quién agregó cada gasto\n- Agregar página de login/registro\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push)",
+      "Bash(git push:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git commit:*)",
+      "Bash(npx vercel --prod)",
+      "Bash(npm run build:*)"
+    ]
+  }
+}
