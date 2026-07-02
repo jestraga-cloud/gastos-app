@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Calendar, DollarSign, TrendingUp, Download, PieChart, LogOut, ChevronLeft, ChevronRight, Users, Target, Edit2, X, Check, RefreshCw, FileSpreadsheet } from 'lucide-react';
+import { Plus, Calendar, DollarSign, TrendingUp, Download, PieChart, LogOut, ChevronLeft, ChevronRight, Users, Target, Edit2, X, Check, RefreshCw, FileSpreadsheet, Wallet, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import {
   PieChart as RechartsPie,
   Pie,
@@ -17,7 +17,7 @@ import {
   Bar
 } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
-import { supabase, type ExpenseWithProfile } from '@/lib/supabase';
+import { supabase, type ExpenseWithProfile, type IncomeWithProfile } from '@/lib/supabase';
 import type { User } from '@supabase/supabase-js';
 
 interface Category {
@@ -37,6 +37,15 @@ interface Expense {
   user_name: string;
   is_recurring?: boolean;
   recurring_day?: number;
+  description?: string;
+}
+
+interface Income {
+  id: number;
+  amount: number;
+  date: string;
+  user_id: string;
+  user_name: string;
   description?: string;
 }
 
@@ -70,6 +79,20 @@ const categories: Category[] = [
   { id: 'ocio', name: 'Ocio', emoji: '🎮', color: '#ec4899' },
   { id: 'otros', name: 'Otros', emoji: '📦', color: '#6b7280' }
 ];
+
+// Componente de Loading Overlay global
+function LoadingOverlay({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center">
+      <div className="bg-slate-800 rounded-2xl p-6 flex flex-col items-center gap-3 shadow-xl">
+        <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+        <span className="text-white text-sm font-medium">Procesando...</span>
+      </div>
+    </div>
+  );
+}
 
 function formatMoney(value: number) {
   return value.toLocaleString('es-AR', { minimumFractionDigits: 2 });
@@ -435,6 +458,7 @@ export default function ExpenseTracker() {
   const [userName, setUserName] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [incomes, setIncomes] = useState<Income[]>([]);
   const [allUsers, setAllUsers] = useState<{ id: string; name: string }[]>([]);
   const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpense[]>([]);
   const [budget, setBudget] = useState<Budget | null>(null);
@@ -443,6 +467,7 @@ export default function ExpenseTracker() {
   const [description, setDescription] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [necessary, setNecessary] = useState(false);
+  const [entryType, setEntryType] = useState<'expense' | 'income'>('expense');
   const [view, setView] = useState<View>('add');
 
   // Filtros
@@ -463,6 +488,7 @@ export default function ExpenseTracker() {
   const [recurringDay, setRecurringDay] = useState('1');
   const [recurringNecessary, setRecurringNecessary] = useState(false);
   const [recurringDescription, setRecurringDescription] = useState('');
+  const [processing, setProcessing] = useState(false);
 
   // Cargar gastos desde Supabase
   const loadExpenses = useCallback(async () => {
@@ -493,6 +519,31 @@ export default function ExpenseTracker() {
     const usersMap = new Map<string, string>();
     mapped.forEach(e => usersMap.set(e.user_id, e.user_name));
     setAllUsers(Array.from(usersMap, ([id, name]) => ({ id, name })));
+  }, []);
+
+  // Cargar ingresos desde Supabase
+  const loadIncomes = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('incomes')
+      .select('*, profiles(name)')
+      .order('date', { ascending: false });
+
+    if (error) {
+      // La tabla puede no existir aún
+      console.log('Incomes table may not exist yet:', error.message);
+      return;
+    }
+
+    const mapped: Income[] = (data as IncomeWithProfile[]).map(i => ({
+      id: i.id,
+      amount: Number(i.amount),
+      date: i.date,
+      user_id: i.user_id,
+      user_name: i.profiles?.name || 'Usuario',
+      description: i.description ?? undefined
+    }));
+
+    setIncomes(mapped);
   }, []);
 
   // Cargar gastos recurrentes
@@ -574,6 +625,7 @@ export default function ExpenseTracker() {
       setUserName(profile?.name || session.user.email || 'Usuario');
 
       await loadExpenses();
+      await loadIncomes();
       await loadRecurringExpenses();
       await loadBudget(new Date().getMonth(), new Date().getFullYear());
       setLoading(false);
@@ -591,7 +643,7 @@ export default function ExpenseTracker() {
     });
 
     return () => subscription.unsubscribe();
-  }, [router, loadExpenses, loadRecurringExpenses, loadBudget]);
+  }, [router, loadExpenses, loadIncomes, loadRecurringExpenses, loadBudget]);
 
   // Cargar presupuesto cuando cambia el mes seleccionado
   const handleMonthChange = useCallback((month: number, year: number) => {
@@ -613,12 +665,19 @@ export default function ExpenseTracker() {
           loadExpenses();
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'incomes' },
+        () => {
+          loadIncomes();
+        }
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, loadExpenses]);
+  }, [user, loadExpenses, loadIncomes]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -631,41 +690,99 @@ export default function ExpenseTracker() {
     const parsed = Number.parseFloat(amount.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0) return;
 
-    const { error } = await supabase.from('expenses').insert({
-      amount: parsed,
-      category: selectedCategory,
-      date: new Date().toISOString(),
-      necessary,
-      user_id: user.id,
-      description: description.trim() || null
-    });
+    setProcessing(true);
+    try {
+      const { error } = await supabase.from('expenses').insert({
+        amount: parsed,
+        category: selectedCategory,
+        date: new Date().toISOString(),
+        necessary,
+        user_id: user.id,
+        description: description.trim() || null
+      });
 
-    if (error) {
-      console.error('Error adding expense:', error);
-      return;
+      if (error) {
+        console.error('Error adding expense:', error);
+        return;
+      }
+
+      setAmount('');
+      setDescription('');
+      setSelectedCategory(null);
+      setNecessary(false);
+
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate?.(50);
+      }
+    } finally {
+      setProcessing(false);
     }
+  };
 
-    setAmount('');
-    setDescription('');
-    setSelectedCategory(null);
-    setNecessary(false);
+  const addIncome = async () => {
+    if (!amount || !user) return;
 
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      navigator.vibrate?.(50);
+    const parsed = Number.parseFloat(amount.replace(',', '.'));
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+
+    setProcessing(true);
+    try {
+      const { error } = await supabase.from('incomes').insert({
+        amount: parsed,
+        date: new Date().toISOString(),
+        user_id: user.id,
+        description: description.trim() || null
+      });
+
+      if (error) {
+        console.error('Error adding income:', error);
+        return;
+      }
+
+      setAmount('');
+      setDescription('');
+
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate?.(50);
+      }
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const deleteIncome = async (id: number) => {
+    setProcessing(true);
+    try {
+      const { error } = await supabase.from('incomes').delete().eq('id', id);
+      if (error) {
+        console.error('Error deleting income:', error);
+      }
+    } finally {
+      setProcessing(false);
     }
   };
 
   const deleteExpense = async (id: number) => {
-    const { error } = await supabase.from('expenses').delete().eq('id', id);
-    if (error) {
-      console.error('Error deleting expense:', error);
+    setProcessing(true);
+    try {
+      const { error } = await supabase.from('expenses').delete().eq('id', id);
+      if (error) {
+        console.error('Error deleting expense:', error);
+      }
+    } finally {
+      setProcessing(false);
     }
   };
 
   const updateExpense = async (id: number, data: { amount: number; category: string; necessary: boolean; description?: string }) => {
-    const { error } = await supabase.from('expenses').update(data).eq('id', id);
-    if (error) {
-      console.error('Error updating expense:', error);
+    setProcessing(true);
+    try {
+      const { error } = await supabase.from('expenses').update(data).eq('id', id);
+      if (error) {
+        console.error('Error updating expense:', error);
+      }
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -675,28 +792,33 @@ export default function ExpenseTracker() {
     const parsed = Number.parseFloat(newBudgetAmount.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0) return;
 
-    const now = new Date();
+    setProcessing(true);
+    try {
+      const now = new Date();
 
-    // Verificar si ya existe presupuesto para este mes
-    const { data: existing } = await supabase
-      .from('budgets')
-      .select('id')
-      .eq('month', now.getMonth() + 1)
-      .eq('year', now.getFullYear())
-      .single();
+      // Verificar si ya existe presupuesto para este mes
+      const { data: existing } = await supabase
+        .from('budgets')
+        .select('id')
+        .eq('month', now.getMonth() + 1)
+        .eq('year', now.getFullYear())
+        .single();
 
-    if (existing) {
-      await supabase.from('budgets').update({ amount: parsed }).eq('id', existing.id);
-    } else {
-      await supabase.from('budgets').insert({
-        amount: parsed,
-        month: now.getMonth() + 1,
-        year: now.getFullYear()
-      });
+      if (existing) {
+        await supabase.from('budgets').update({ amount: parsed }).eq('id', existing.id);
+      } else {
+        await supabase.from('budgets').insert({
+          amount: parsed,
+          month: now.getMonth() + 1,
+          year: now.getFullYear()
+        });
+      }
+
+      setNewBudgetAmount('');
+      loadBudget(now.getMonth(), now.getFullYear());
+    } finally {
+      setProcessing(false);
     }
-
-    setNewBudgetAmount('');
-    loadBudget(now.getMonth(), now.getFullYear());
   };
 
   const addRecurringExpense = async () => {
@@ -708,36 +830,46 @@ export default function ExpenseTracker() {
     const day = parseInt(recurringDay);
     if (day < 1 || day > 28) return;
 
-    const { error } = await supabase.from('recurring_expenses').insert({
-      amount: parsed,
-      category: recurringCategory,
-      day_of_month: day,
-      necessary: recurringNecessary,
-      user_id: user.id,
-      description: recurringDescription.trim() || `Gasto recurrente - ${getCategoryData(recurringCategory)?.name}`,
-      active: true
-    });
+    setProcessing(true);
+    try {
+      const { error } = await supabase.from('recurring_expenses').insert({
+        amount: parsed,
+        category: recurringCategory,
+        day_of_month: day,
+        necessary: recurringNecessary,
+        user_id: user.id,
+        description: recurringDescription.trim() || `Gasto recurrente - ${getCategoryData(recurringCategory)?.name}`,
+        active: true
+      });
 
-    if (error) {
-      console.error('Error adding recurring expense:', error);
-      return;
+      if (error) {
+        console.error('Error adding recurring expense:', error);
+        return;
+      }
+
+      setRecurringAmount('');
+      setRecurringCategory(null);
+      setRecurringDay('1');
+      setRecurringNecessary(false);
+      setRecurringDescription('');
+      setShowRecurringForm(false);
+      loadRecurringExpenses();
+    } finally {
+      setProcessing(false);
     }
-
-    setRecurringAmount('');
-    setRecurringCategory(null);
-    setRecurringDay('1');
-    setRecurringNecessary(false);
-    setRecurringDescription('');
-    setShowRecurringForm(false);
-    loadRecurringExpenses();
   };
 
   const deleteRecurringExpense = async (id: number) => {
-    const { error } = await supabase.from('recurring_expenses').update({ active: false }).eq('id', id);
-    if (error) {
-      console.error('Error deleting recurring expense:', error);
-    } else {
-      loadRecurringExpenses();
+    setProcessing(true);
+    try {
+      const { error } = await supabase.from('recurring_expenses').update({ active: false }).eq('id', id);
+      if (error) {
+        console.error('Error deleting recurring expense:', error);
+      } else {
+        loadRecurringExpenses();
+      }
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -752,6 +884,23 @@ export default function ExpenseTracker() {
   }, [expenses, selectedMonth, selectedYear, selectedUserId]);
 
   const totalFiltered = useMemo(() => filteredExpenses.reduce((sum, e) => sum + e.amount, 0), [filteredExpenses]);
+
+  // Ingresos filtrados por mes/año y usuario
+  const filteredIncomes = useMemo(() => {
+    return incomes.filter(i => {
+      const d = new Date(i.date);
+      const matchesMonth = d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
+      const matchesUser = selectedUserId === null || i.user_id === selectedUserId;
+      return matchesMonth && matchesUser;
+    });
+  }, [incomes, selectedMonth, selectedYear, selectedUserId]);
+
+  const totalIncomeFiltered = useMemo(() => filteredIncomes.reduce((sum, i) => sum + i.amount, 0), [filteredIncomes]);
+
+  // Saldo acumulado (todos los tiempos): fondos totales - gastos totales
+  const totalIncomeAll = useMemo(() => incomes.reduce((sum, i) => sum + i.amount, 0), [incomes]);
+  const totalExpensesAll = useMemo(() => expenses.reduce((sum, e) => sum + e.amount, 0), [expenses]);
+  const saldo = useMemo(() => totalIncomeAll - totalExpensesAll, [totalIncomeAll, totalExpensesAll]);
 
   const totalNecessary = useMemo(
     () => filteredExpenses.filter(e => e.necessary).reduce((sum, e) => sum + e.amount, 0),
@@ -1292,12 +1441,51 @@ export default function ExpenseTracker() {
           />
 
           <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 rounded-2xl shadow-xl mb-6">
-            <div className="text-sm opacity-90 mb-1">Total del período</div>
+            <div className="text-sm opacity-90 mb-1">Gastos del período</div>
             <div className="text-4xl font-bold">${formatMoney(totalFiltered)}</div>
             <div className="text-sm opacity-75 mt-2">
               {filteredExpenses.length} {filteredExpenses.length === 1 ? 'gasto' : 'gastos'}
             </div>
+            {totalIncomeFiltered > 0 && (
+              <div className="flex justify-between text-sm mt-3 pt-3 border-t border-white/20">
+                <span className="opacity-90">Ingresos: ${formatMoney(totalIncomeFiltered)}</span>
+                <span className={totalIncomeFiltered - totalFiltered >= 0 ? 'text-emerald-200' : 'text-red-200'}>
+                  Neto: ${formatMoney(totalIncomeFiltered - totalFiltered)}
+                </span>
+              </div>
+            )}
           </div>
+
+          {filteredIncomes.length > 0 && (
+            <div className="mb-6">
+              <h2 className="text-lg font-semibold mb-3">Ingresos</h2>
+              <div className="space-y-2">
+                {filteredIncomes.map(income => (
+                  <div key={income.id} className="bg-slate-800 p-4 rounded-xl flex items-center justify-between border-l-4 border-emerald-500">
+                    <div className="flex items-center gap-3 flex-1">
+                      <ArrowUpCircle size={22} className="text-emerald-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium">{income.description || 'Ingreso'}</div>
+                        <div className="text-sm text-slate-400 truncate">
+                          {formatDate(income.date)} · {income.user_name}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-lg text-emerald-400">+${formatMoney(income.amount)}</span>
+                      <button
+                        onClick={() => deleteIncome(income.id)}
+                        className="text-red-400 hover:text-red-300 p-1"
+                        title="Eliminar"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {categoryTotals.length > 0 && (
             <div className="mb-6">
@@ -1384,11 +1572,12 @@ export default function ExpenseTracker() {
   const budgetPercentage = budget ? Math.min((totalCurrentMonth / budget.amount) * 100, 100) : 0;
 
   return (
+    <>
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4">
       <div className="max-w-md mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold">Nuevo Gasto</h1>
+            <h1 className="text-2xl font-bold">{entryType === 'income' ? 'Nuevo Ingreso' : 'Nuevo Gasto'}</h1>
             <p className="text-sm text-slate-400">Hola, {userName}</p>
           </div>
           <div className="flex items-center gap-2">
@@ -1408,8 +1597,45 @@ export default function ExpenseTracker() {
 
         <NavBar view={view} setView={setView} />
 
-        {/* Barra de progreso del presupuesto */}
-        {budget && (
+        {/* Tarjeta de saldo (fondos - gastos) */}
+        <div className="bg-gradient-to-r from-emerald-600 to-teal-600 p-5 rounded-2xl shadow-xl mb-6">
+          <div className="flex items-center gap-2 text-sm opacity-90 mb-1">
+            <Wallet size={16} />
+            Saldo disponible
+          </div>
+          <div className="text-3xl font-bold">${formatMoney(saldo)}</div>
+          <div className="flex justify-between text-sm opacity-90 mt-3 pt-3 border-t border-white/20">
+            <span className="flex items-center gap-1">
+              <ArrowUpCircle size={14} /> Fondos: ${formatMoney(totalIncomeAll)}
+            </span>
+            <span className="flex items-center gap-1">
+              <ArrowDownCircle size={14} /> Gastos: ${formatMoney(totalExpensesAll)}
+            </span>
+          </div>
+        </div>
+
+        {/* Selector Gasto / Ingreso */}
+        <div className="grid grid-cols-2 gap-2 bg-slate-800 p-1.5 rounded-2xl mb-6">
+          <button
+            onClick={() => setEntryType('expense')}
+            className={`flex items-center justify-center gap-2 py-3 rounded-xl font-medium transition-all ${
+              entryType === 'expense' ? 'bg-red-500 text-white shadow' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <ArrowDownCircle size={18} /> Gasto
+          </button>
+          <button
+            onClick={() => setEntryType('income')}
+            className={`flex items-center justify-center gap-2 py-3 rounded-xl font-medium transition-all ${
+              entryType === 'income' ? 'bg-emerald-500 text-white shadow' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <ArrowUpCircle size={18} /> Ingreso
+          </button>
+        </div>
+
+        {/* Barra de progreso del presupuesto (solo para gastos) */}
+        {entryType === 'expense' && budget && (
           <div className="bg-slate-800 p-4 rounded-2xl mb-6">
             <div className="flex justify-between text-sm mb-2">
               <span className="text-slate-400">Presupuesto del mes</span>
@@ -1456,42 +1682,62 @@ export default function ExpenseTracker() {
           />
         </div>
 
-        <div className="mb-6">
-          <Toggle checked={necessary} onChange={setNecessary} label="Necesario" />
-        </div>
+        {entryType === 'expense' && (
+          <>
+            <div className="mb-6">
+              <Toggle checked={necessary} onChange={setNecessary} label="Necesario" />
+            </div>
 
-        <div className="mb-6">
-          <label className="block text-sm text-slate-400 mb-3">Categoría</label>
-          <div className="grid grid-cols-2 gap-3">
-            {categories.map(cat => (
-              <button
-                key={cat.id}
-                onClick={() => setSelectedCategory(cat.id)}
-                className="p-4 rounded-xl transition-all transform active:scale-95"
-                style={{
-                  backgroundColor: selectedCategory === cat.id ? cat.color : '#1e293b',
-                  transform: selectedCategory === cat.id ? 'scale(1.05)' : 'scale(1)'
-                }}
-              >
-                <div className="text-3xl mb-2">{cat.emoji}</div>
-                <div className="text-sm font-medium">{cat.name}</div>
-              </button>
-            ))}
-          </div>
-        </div>
+            <div className="mb-6">
+              <label className="block text-sm text-slate-400 mb-3">Categoría</label>
+              <div className="grid grid-cols-2 gap-3">
+                {categories.map(cat => (
+                  <button
+                    key={cat.id}
+                    onClick={() => setSelectedCategory(cat.id)}
+                    className="p-4 rounded-xl transition-all transform active:scale-95"
+                    style={{
+                      backgroundColor: selectedCategory === cat.id ? cat.color : '#1e293b',
+                      transform: selectedCategory === cat.id ? 'scale(1.05)' : 'scale(1)'
+                    }}
+                  >
+                    <div className="text-3xl mb-2">{cat.emoji}</div>
+                    <div className="text-sm font-medium">{cat.name}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
 
-        <button
-          onClick={addExpense}
-          disabled={!amount || !selectedCategory}
-          className={`w-full p-5 rounded-xl font-bold text-lg transition-all transform active:scale-95 ${
-            amount && selectedCategory
-              ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 shadow-lg'
-              : 'bg-slate-700 text-slate-500 cursor-not-allowed'
-          }`}
-        >
-          Agregar Gasto
-        </button>
+        {entryType === 'income' ? (
+          <button
+            onClick={addIncome}
+            disabled={!amount}
+            className={`w-full p-5 rounded-xl font-bold text-lg transition-all transform active:scale-95 ${
+              amount
+                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg'
+                : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+            }`}
+          >
+            Agregar Ingreso
+          </button>
+        ) : (
+          <button
+            onClick={addExpense}
+            disabled={!amount || !selectedCategory}
+            className={`w-full p-5 rounded-xl font-bold text-lg transition-all transform active:scale-95 ${
+              amount && selectedCategory
+                ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 shadow-lg'
+                : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+            }`}
+          >
+            Agregar Gasto
+          </button>
+        )}
       </div>
     </div>
+    <LoadingOverlay visible={processing} />
+    </>
   );
 }

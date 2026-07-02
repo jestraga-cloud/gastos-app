@@ -19,9 +19,23 @@ export interface ExpenseRow {
   date: string;
   necessary: boolean;
   user_id: string;
+  description: string | null;
   created_at: string;
 }
 
 export interface ExpenseWithProfile extends ExpenseRow {
+  profiles: Pick<Profile, 'name'> | null;
+}
+
+export interface IncomeRow {
+  id: number;
+  amount: number;
+  date: string;
+  user_id: string;
+  description: string | null;
+  created_at: string;
+}
+
+export interface IncomeWithProfile extends IncomeRow {
   profiles: Pick<Profile, 'name'> | null;
 }
