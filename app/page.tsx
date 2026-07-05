@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
-import { Plus, Calendar, DollarSign, TrendingUp, Download, PieChart, LogOut, ChevronLeft, ChevronRight, Users, Target, Edit2, X, Check, RefreshCw, FileSpreadsheet, Wallet, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
+import { Plus, Calendar, DollarSign, TrendingUp, Download, PieChart, ChevronLeft, ChevronRight, Target, Edit2, X, Check, RefreshCw, FileSpreadsheet, Wallet, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import {
   PieChart as RechartsPie,
   Pie,
@@ -17,8 +16,7 @@ import {
   Bar
 } from 'recharts';
 import type { PieLabelRenderProps } from 'recharts';
-import { supabase, type ExpenseWithProfile, type IncomeWithProfile } from '@/lib/supabase';
-import type { User } from '@supabase/supabase-js';
+import { supabase, type ExpenseRow, type IncomeRow } from '@/lib/supabase';
 
 interface Category {
   id: string;
@@ -33,10 +31,6 @@ interface Expense {
   category: string;
   date: string;
   necessary: boolean;
-  user_id: string;
-  user_name: string;
-  is_recurring?: boolean;
-  recurring_day?: number;
   description?: string;
 }
 
@@ -44,8 +38,6 @@ interface Income {
   id: number;
   amount: number;
   date: string;
-  user_id: string;
-  user_name: string;
   description?: string;
 }
 
@@ -55,8 +47,6 @@ interface RecurringExpense {
   category: string;
   day_of_month: number;
   necessary: boolean;
-  user_id: string;
-  user_name: string;
   description: string;
   active: boolean;
 }
@@ -118,7 +108,7 @@ function formatDate(dateString: string) {
 }
 
 function exportExpensesToCSV(expenses: Expense[], filename?: string) {
-  const headers = ['Fecha', 'Categoría', 'Monto', 'Necesario', 'Usuario', 'Descripción'];
+  const headers = ['Fecha', 'Categoría', 'Monto', 'Necesario', 'Descripción'];
 
   const escape = (v: unknown) => {
     const s = String(v ?? '');
@@ -131,7 +121,7 @@ function exportExpensesToCSV(expenses: Expense[], filename?: string) {
   const rows = expenses.map(e => {
     const cat = getCategoryData(e.category);
     const date = new Date(e.date).toLocaleString('es-AR');
-    return [date, cat?.name || '', e.amount.toFixed(2), e.necessary ? 'Sí' : 'No', e.user_name, e.description || ''].map(escape).join(',');
+    return [date, cat?.name || '', e.amount.toFixed(2), e.necessary ? 'Sí' : 'No', e.description || ''].map(escape).join(',');
   });
 
   const csv = [headers.map(escape).join(','), ...rows].join('\n');
@@ -148,7 +138,7 @@ function exportExpensesToCSV(expenses: Expense[], filename?: string) {
 
 function exportExpensesToExcel(expenses: Expense[], filename?: string) {
   // Crear tabla HTML para Excel
-  const headers = ['Fecha', 'Categoría', 'Monto', 'Necesario', 'Usuario', 'Descripción'];
+  const headers = ['Fecha', 'Categoría', 'Monto', 'Necesario', 'Descripción'];
 
   let html = '<html><head><meta charset="UTF-8"></head><body>';
   html += '<table border="1">';
@@ -162,7 +152,6 @@ function exportExpensesToExcel(expenses: Expense[], filename?: string) {
     html += `<td>${cat?.emoji || ''} ${cat?.name || ''}</td>`;
     html += `<td style="text-align:right">$${e.amount.toFixed(2)}</td>`;
     html += `<td>${e.necessary ? 'Sí' : 'No'}</td>`;
-    html += `<td>${e.user_name}</td>`;
     html += `<td>${e.description || ''}</td>`;
     html += '</tr>';
   });
@@ -317,42 +306,6 @@ function MonthSelector({
   );
 }
 
-// Selector de usuario
-function UserFilter({
-  users,
-  selectedUserId,
-  onChange
-}: {
-  users: { id: string; name: string }[];
-  selectedUserId: string | null;
-  onChange: (userId: string | null) => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-2">
-      <button
-        onClick={() => onChange(null)}
-        className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap transition ${
-          selectedUserId === null ? 'bg-green-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-        }`}
-      >
-        <Users size={14} className="inline mr-1" />
-        Todos
-      </button>
-      {users.map(user => (
-        <button
-          key={user.id}
-          onClick={() => onChange(user.id)}
-          className={`px-3 py-1.5 rounded-full text-sm whitespace-nowrap transition ${
-            selectedUserId === user.id ? 'bg-green-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-          }`}
-        >
-          {user.name}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 // Modal de edición
 function EditExpenseModal({
   expense,
@@ -453,13 +406,9 @@ function EditExpenseModal({
 }
 
 export default function ExpenseTracker() {
-  const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
-  const [userName, setUserName] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [incomes, setIncomes] = useState<Income[]>([]);
-  const [allUsers, setAllUsers] = useState<{ id: string; name: string }[]>([]);
   const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpense[]>([]);
   const [budget, setBudget] = useState<Budget | null>(null);
 
@@ -473,7 +422,6 @@ export default function ExpenseTracker() {
   // Filtros
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   // Edición
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
@@ -494,7 +442,7 @@ export default function ExpenseTracker() {
   const loadExpenses = useCallback(async () => {
     const { data, error } = await supabase
       .from('expenses')
-      .select('*, profiles(name)')
+      .select('*')
       .order('date', { ascending: false });
 
     if (error) {
@@ -502,30 +450,23 @@ export default function ExpenseTracker() {
       return;
     }
 
-    const mapped: Expense[] = (data as ExpenseWithProfile[]).map(e => ({
+    const mapped: Expense[] = (data as ExpenseRow[]).map(e => ({
       id: e.id,
       amount: Number(e.amount),
       category: e.category,
       date: e.date,
       necessary: e.necessary,
-      user_id: e.user_id,
-      user_name: e.profiles?.name || 'Usuario',
-      description: (e as unknown as { description?: string }).description
+      description: e.description ?? undefined
     }));
 
     setExpenses(mapped);
-
-    // Extraer usuarios únicos
-    const usersMap = new Map<string, string>();
-    mapped.forEach(e => usersMap.set(e.user_id, e.user_name));
-    setAllUsers(Array.from(usersMap, ([id, name]) => ({ id, name })));
   }, []);
 
   // Cargar ingresos desde Supabase
   const loadIncomes = useCallback(async () => {
     const { data, error } = await supabase
       .from('incomes')
-      .select('*, profiles(name)')
+      .select('*')
       .order('date', { ascending: false });
 
     if (error) {
@@ -534,12 +475,10 @@ export default function ExpenseTracker() {
       return;
     }
 
-    const mapped: Income[] = (data as IncomeWithProfile[]).map(i => ({
+    const mapped: Income[] = (data as IncomeRow[]).map(i => ({
       id: i.id,
       amount: Number(i.amount),
       date: i.date,
-      user_id: i.user_id,
-      user_name: i.profiles?.name || 'Usuario',
       description: i.description ?? undefined
     }));
 
@@ -550,7 +489,7 @@ export default function ExpenseTracker() {
   const loadRecurringExpenses = useCallback(async () => {
     const { data, error } = await supabase
       .from('recurring_expenses')
-      .select('*, profiles(name)')
+      .select('*')
       .eq('active', true)
       .order('day_of_month', { ascending: true });
 
@@ -566,8 +505,6 @@ export default function ExpenseTracker() {
       category: e.category as string,
       day_of_month: e.day_of_month as number,
       necessary: e.necessary as boolean,
-      user_id: e.user_id as string,
-      user_name: (e.profiles as { name: string } | null)?.name || 'Usuario',
       description: e.description as string,
       active: e.active as boolean
     }));
@@ -592,38 +529,9 @@ export default function ExpenseTracker() {
     setBudget(data as Budget);
   }, []);
 
-  // Verificar autenticación y cargar datos
+  // Cargar datos al montar
   useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-
-      if (!session) {
-        router.push('/login');
-        return;
-      }
-
-      setUser(session.user);
-
-      // Obtener nombre del perfil
-      let { data: profile } = await supabase
-        .from('profiles')
-        .select('name')
-        .eq('id', session.user.id)
-        .single();
-
-      // Si no existe el perfil, crearlo con el nombre de los metadatos
-      if (!profile) {
-        const userName = session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'Usuario';
-        const { data: newProfile } = await supabase
-          .from('profiles')
-          .insert({ id: session.user.id, name: userName })
-          .select('name')
-          .single();
-        profile = newProfile;
-      }
-
-      setUserName(profile?.name || session.user.email || 'Usuario');
-
+    const loadAll = async () => {
       await loadExpenses();
       await loadIncomes();
       await loadRecurringExpenses();
@@ -631,19 +539,8 @@ export default function ExpenseTracker() {
       setLoading(false);
     };
 
-    checkAuth();
-
-    // Escuchar cambios de autenticación
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') {
-        router.push('/login');
-      } else if (session) {
-        setUser(session.user);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [router, loadExpenses, loadIncomes, loadRecurringExpenses, loadBudget]);
+    loadAll();
+  }, [loadExpenses, loadIncomes, loadRecurringExpenses, loadBudget]);
 
   // Cargar presupuesto cuando cambia el mes seleccionado
   const handleMonthChange = useCallback((month: number, year: number) => {
@@ -654,8 +551,6 @@ export default function ExpenseTracker() {
 
   // Suscripción en tiempo real
   useEffect(() => {
-    if (!user) return;
-
     const channel = supabase
       .channel('expenses-realtime')
       .on(
@@ -677,15 +572,10 @@ export default function ExpenseTracker() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, loadExpenses, loadIncomes]);
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.push('/login');
-  };
+  }, [loadExpenses, loadIncomes]);
 
   const addExpense = async () => {
-    if (!amount || !selectedCategory || !user) return;
+    if (!amount || !selectedCategory) return;
 
     const parsed = Number.parseFloat(amount.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0) return;
@@ -697,7 +587,6 @@ export default function ExpenseTracker() {
         category: selectedCategory,
         date: new Date().toISOString(),
         necessary,
-        user_id: user.id,
         description: description.trim() || null
       });
 
@@ -720,7 +609,7 @@ export default function ExpenseTracker() {
   };
 
   const addIncome = async () => {
-    if (!amount || !user) return;
+    if (!amount) return;
 
     const parsed = Number.parseFloat(amount.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0) return;
@@ -730,7 +619,6 @@ export default function ExpenseTracker() {
       const { error } = await supabase.from('incomes').insert({
         amount: parsed,
         date: new Date().toISOString(),
-        user_id: user.id,
         description: description.trim() || null
       });
 
@@ -822,7 +710,7 @@ export default function ExpenseTracker() {
   };
 
   const addRecurringExpense = async () => {
-    if (!recurringAmount || !recurringCategory || !user) return;
+    if (!recurringAmount || !recurringCategory) return;
 
     const parsed = Number.parseFloat(recurringAmount.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0) return;
@@ -837,7 +725,6 @@ export default function ExpenseTracker() {
         category: recurringCategory,
         day_of_month: day,
         necessary: recurringNecessary,
-        user_id: user.id,
         description: recurringDescription.trim() || `Gasto recurrente - ${getCategoryData(recurringCategory)?.name}`,
         active: true
       });
@@ -877,11 +764,9 @@ export default function ExpenseTracker() {
   const filteredExpenses = useMemo(() => {
     return expenses.filter(e => {
       const d = new Date(e.date);
-      const matchesMonth = d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
-      const matchesUser = selectedUserId === null || e.user_id === selectedUserId;
-      return matchesMonth && matchesUser;
+      return d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
     });
-  }, [expenses, selectedMonth, selectedYear, selectedUserId]);
+  }, [expenses, selectedMonth, selectedYear]);
 
   const totalFiltered = useMemo(() => filteredExpenses.reduce((sum, e) => sum + e.amount, 0), [filteredExpenses]);
 
@@ -889,11 +774,9 @@ export default function ExpenseTracker() {
   const filteredIncomes = useMemo(() => {
     return incomes.filter(i => {
       const d = new Date(i.date);
-      const matchesMonth = d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
-      const matchesUser = selectedUserId === null || i.user_id === selectedUserId;
-      return matchesMonth && matchesUser;
+      return d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
     });
-  }, [incomes, selectedMonth, selectedYear, selectedUserId]);
+  }, [incomes, selectedMonth, selectedYear]);
 
   const totalIncomeFiltered = useMemo(() => filteredIncomes.reduce((sum, i) => sum + i.amount, 0), [filteredIncomes]);
 
@@ -947,15 +830,8 @@ export default function ExpenseTracker() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4">
         <div className="max-w-md mx-auto">
-          <div className="flex items-center justify-between mb-6">
+          <div className="mb-6">
             <h1 className="text-2xl font-bold">Configuración</h1>
-            <button
-              onClick={handleLogout}
-              className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full transition-all"
-              title="Cerrar sesión"
-            >
-              <LogOut size={18} />
-            </button>
           </div>
 
           <NavBar view={view} setView={setView} />
@@ -1200,14 +1076,6 @@ export default function ExpenseTracker() {
       monthlyComparison.push({ mes: monthNames[date.getMonth()], total });
     }
 
-    // Gastos por usuario
-    const userTotals = allUsers.map(u => ({
-      ...u,
-      total: filteredExpenses.filter(e => e.user_id === u.id).reduce((sum, e) => sum + e.amount, 0)
-    })).filter(u => u.total > 0);
-
-    const userColors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
-
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4">
         <div className="max-w-md mx-auto">
@@ -1230,13 +1098,6 @@ export default function ExpenseTracker() {
                 <FileSpreadsheet size={16} />
                 Excel
               </button>
-              <button
-                onClick={handleLogout}
-                className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full transition-all"
-                title="Cerrar sesión"
-              >
-                <LogOut size={18} />
-              </button>
             </div>
           </div>
 
@@ -1246,12 +1107,6 @@ export default function ExpenseTracker() {
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}
             onChange={handleMonthChange}
-          />
-
-          <UserFilter
-            users={allUsers}
-            selectedUserId={selectedUserId}
-            onChange={setSelectedUserId}
           />
 
           <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-6 rounded-2xl shadow-xl mb-4">
@@ -1274,33 +1129,6 @@ export default function ExpenseTracker() {
               <div className="text-xl font-bold text-red-400">${formatMoney(totalUnnecessary)}</div>
             </div>
           </div>
-
-          {/* Gráfico por usuario */}
-          {userTotals.length > 1 && (
-            <div className="bg-slate-800 p-6 rounded-2xl mb-6">
-              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Users size={20} />
-                Gastos por Usuario
-              </h2>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={userTotals} layout="vertical">
-                  <XAxis type="number" stroke="#94a3b8" />
-                  <YAxis type="category" dataKey="name" stroke="#94a3b8" width={80} />
-                  <Tooltip
-                    formatter={(value: unknown) =>
-                      `$${formatMoney(typeof value === 'number' ? value : Number(value))}`
-                    }
-                    contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }}
-                  />
-                  <Bar dataKey="total" radius={[0, 8, 8, 0]}>
-                    {userTotals.map((_, index) => (
-                      <Cell key={`cell-${index}`} fill={userColors[index % userColors.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
 
           {pieData.length > 0 && (
             <div className="bg-slate-800 p-6 rounded-2xl mb-6">
@@ -1415,15 +1243,8 @@ export default function ExpenseTracker() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4">
         <div className="max-w-md mx-auto">
-          <div className="flex items-center justify-between mb-6">
+          <div className="mb-6">
             <h1 className="text-2xl font-bold">Historial</h1>
-            <button
-              onClick={handleLogout}
-              className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full transition-all"
-              title="Cerrar sesión"
-            >
-              <LogOut size={18} />
-            </button>
           </div>
 
           <NavBar view={view} setView={setView} />
@@ -1432,12 +1253,6 @@ export default function ExpenseTracker() {
             selectedMonth={selectedMonth}
             selectedYear={selectedYear}
             onChange={handleMonthChange}
-          />
-
-          <UserFilter
-            users={allUsers}
-            selectedUserId={selectedUserId}
-            onChange={setSelectedUserId}
           />
 
           <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 rounded-2xl shadow-xl mb-6">
@@ -1467,7 +1282,7 @@ export default function ExpenseTracker() {
                       <div className="flex-1 min-w-0">
                         <div className="font-medium">{income.description || 'Ingreso'}</div>
                         <div className="text-sm text-slate-400 truncate">
-                          {formatDate(income.date)} · {income.user_name}
+                          {formatDate(income.date)}
                         </div>
                       </div>
                     </div>
@@ -1524,7 +1339,7 @@ export default function ExpenseTracker() {
                         )}
                       </div>
                       <div className="text-sm text-slate-400 truncate">
-                        {formatDate(expense.date)} · {expense.user_name}
+                        {formatDate(expense.date)}
                       </div>
                     </div>
                   </div>
@@ -1578,20 +1393,12 @@ export default function ExpenseTracker() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold">{entryType === 'income' ? 'Nuevo Ingreso' : 'Nuevo Gasto'}</h1>
-            <p className="text-sm text-slate-400">Hola, {userName}</p>
           </div>
           <div className="flex items-center gap-2">
             <div className="bg-slate-700 px-4 py-2 rounded-full">
               <span className="text-sm text-slate-400">Mes: </span>
               <span className="text-sm font-medium">${totalCurrentMonth.toLocaleString('es-AR')}</span>
             </div>
-            <button
-              onClick={handleLogout}
-              className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full transition-all"
-              title="Cerrar sesión"
-            >
-              <LogOut size={18} />
-            </button>
           </div>
         </div>
 

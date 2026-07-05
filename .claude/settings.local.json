@@ -11,7 +11,15 @@
       "Bash(git commit:*)",
       "Bash(npx vercel --prod)",
       "Bash(npm run build:*)",
-      "Bash(node scripts/generate-icons.js:*)"
+      "Bash(node scripts/generate-icons.js:*)",
+      "Bash(npx create-next-app@latest:*)",
+      "Bash(git init:*)",
+      "Bash(npx vercel:*)",
+      "Bash(printf:*)",
+      "Bash(npx tailwindcss:*)",
+      "Bash(./node_modules/.bin/tailwindcss:*)",
+      "Bash(node -e:*)",
+      "Bash(ls:*)"
     ]
   }
 }
